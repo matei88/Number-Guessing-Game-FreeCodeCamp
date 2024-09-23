@@ -38,5 +38,6 @@ while true; do
       echo "You guessed it in $NUMBER_OF_GUESSES tries. The secret number was $RANDOM_NUMBER. Nice job!"
 
       $($PSQL "UPDATE users SET games_played=games_played+1 WHERE user_id=$USER_ID")
+      $($PSQL "INSERT INTO games(user_id, guesses) VALUES($USER_ID, $NUMBER_OF_GUESSES)")
     fi
 done
