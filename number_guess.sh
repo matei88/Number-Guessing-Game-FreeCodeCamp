@@ -22,4 +22,17 @@ RANDOM_NUMBER=$(( RANDOM % 1000 + 1 ))
 
 while true; do
   read GUESS
+
+  if ! [[ "$GUESS" =~ ^[0-9]+$ ]]; then
+      echo "That is not an integer, guess again:"
+      continue
+  fi
+
+  NUMBER_OF_GUESSES=$((NUMBER_OF_GUESSES + 1))
+
+    if [[ $GUESS -lt $RANDOM_NUMBER ]]; then
+      echo "It's higher than that, guess again:"
+    elif [[ $GUESS -gt $RANDOM_NUMBER ]]; then
+      echo "It's lower than that, guess again:"
+    fi
 done
