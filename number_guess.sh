@@ -34,5 +34,9 @@ while true; do
       echo "It's higher than that, guess again:"
     elif [[ $GUESS -gt $RANDOM_NUMBER ]]; then
       echo "It's lower than that, guess again:"
+    else
+      echo "You guessed it in $NUMBER_OF_GUESSES tries. The secret number was $RANDOM_NUMBER. Nice job!"
+
+      $($PSQL "UPDATE users SET games_played=games_played+1 WHERE user_id=$USER_ID")
     fi
 done
