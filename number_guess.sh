@@ -39,5 +39,9 @@ while true; do
 
       $($PSQL "UPDATE users SET games_played=games_played+1 WHERE user_id=$USER_ID")
       $($PSQL "INSERT INTO games(user_id, guesses) VALUES($USER_ID, $NUMBER_OF_GUESSES)")
+
+      if [[ -z $BEST_GAME || $NUMBER_OF_GUESSES -lt $BEST_GAME ]]; then
+        $($PSQL "UPDATE users SET best_game=$NUMBER_OF_GUESSES WHERE user_id=$USER_ID")
+      fi
     fi
 done
