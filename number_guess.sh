@@ -6,3 +6,12 @@ echo "Enter your username:"
 read USERNAME
 
 USER_QUERY=$($PSQL "SELECT user_id, games_played, best_game FROM users WHERE username='$USERNAME'")
+
+if [[ -z $USER_QUERY ]]; then
+  echo "Welcome, $USERNAME! It looks like this is your first time here."
+  INSERT_USER=$($PSQL "INSERT INTO users(username) VALUES('$USERNAME')")
+  USER_ID=$($PSQL "SELECT user_id FROM users WHERE username='$USERNAME'")
+else
+  IFS="|" read USER_ID GAMES_PLAYED BEST_GAME <<< "$USER_QUERY"
+  echo "Welcome back, $USERNAME! You have played $GAMES_PLAYED games, and your best game took $BEST_GAME guesses."
+fi
