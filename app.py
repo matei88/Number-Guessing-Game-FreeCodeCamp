@@ -25,6 +25,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 from src.database import DatabaseManager
+from src.langfuse_client import flush_traces
 from src.schema_parser import parse_ddl, topological_sort
 
 # ── page config ──────────────────────────────────────────────────────────────
@@ -207,6 +208,7 @@ if "Data Generation" in page:
                 progress.empty()
                 logger.info("Generation complete: %d tables", len(generated))
                 st.success(f"Done! Generated data for {len(generated)} tables.")
+                flush_traces()
             except Exception:
                 logger.error("Data generation failed", exc_info=True)
                 progress.empty()
@@ -280,6 +282,7 @@ if "Data Generation" in page:
                             db = get_db()
                             if db:
                                 db.store_dataframe(updated, selected)
+                            flush_traces()
                             logger.info("Quick edit applied to '%s': %d rows", selected, len(updated))
                         except Exception:
                             logger.error("Quick edit failed for table '%s'", selected, exc_info=True)
@@ -393,3 +396,5 @@ elif "Talk" in page:
                             "sql": sql,
                         }
                     )
+
+                flush_traces()

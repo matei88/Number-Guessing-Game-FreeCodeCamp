@@ -9,7 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from .database import DatabaseManager
-from .langfuse_client import LangfuseTracker
+from .langfuse_client import observe, get_langfuse, start_observation
 from .schema_parser import Table
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 class TalkToDataManager:
     def __init__(self, db_manager: DatabaseManager) -> None:
         self.db = db_manager
-        self.tracker = LangfuseTracker()
         self.model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
         self._client = None
 
@@ -38,6 +37,7 @@ class TalkToDataManager:
                 raise RuntimeError("No Google credentials configured.")
         return self._client
 
+    @observe(as_type="span", name="talk-to-data-query", capture_input=False)
     def query(self, question: str, schema_tables: Dict[str, Table]) -> Dict[str, Any]:
         from google.genai import types  # type: ignore
 
@@ -81,84 +81,112 @@ class TalkToDataManager:
             "Choose the most informative visualization type."
         )
 
+        # Annotate the outer span with the user's question
+        lf = get_langfuse()
+        if lf:
+            lf.update_current_span(
+                input={"question": question, "tables": list(schema_tables.keys())},
+            )
+
         logger.info("Talk-to-data query: %r", question)
         try:
-            resp = self.client.models.generate_content(
+            # ── Gemini function-call generation ──────────────────────────────
+            with start_observation(
+                name="nl-to-sql",
+                as_type="generation",
                 model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    tools=[types.Tool(function_declarations=[execute_sql_decl])],
-                ),
-            )
+                model_parameters={"temperature": 0.1},
+                input=prompt,
+            ) as nl_gen:
+                resp = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.1,
+                        tools=[types.Tool(function_declarations=[execute_sql_decl])],
+                    ),
+                )
+
+            sql: str = ""
+            viz: str = "table"
+            explanation: str = ""
 
             for part in resp.candidates[0].content.parts:
                 if hasattr(part, "function_call") and part.function_call:
                     fc = part.function_call
-                    sql: str = fc.args.get("sql", "")
-                    viz: str = fc.args.get("visualization", "table")
-                    explanation: str = fc.args.get("explanation", "")
+                    sql = fc.args.get("sql", "")
+                    viz = fc.args.get("visualization", "table")
+                    explanation = fc.args.get("explanation", "")
+                    break
 
-                    logger.debug("Generated SQL (viz=%s): %s", viz, sql)
+            # Update the generation span with what Gemini produced
+            nl_gen.update(output={"sql": sql, "visualization": viz, "explanation": explanation})
+            logger.debug("Generated SQL (viz=%s): %s", viz, sql)
 
-                    try:
-                        df = self.db.execute_query(sql)
-                    except Exception:
-                        logger.error("SQL execution failed for query: %s", sql, exc_info=True)
-                        # re-read exc for the user-facing message
-                        import sys
-                        exc_msg = str(sys.exc_info()[1])
-                        return {
-                            "type": "text",
-                            "content": f"SQL error: {exc_msg}\n\n```sql\n{sql}\n```",
-                        }
+            if not sql:
+                logger.warning("Gemini did not produce a function call for question: %r", question)
+                text_resp = getattr(resp, "text", "") or "I couldn't generate a query for that."
+                return {"type": "text", "content": text_resp}
 
-                    self.tracker.track_generation(
-                        name="talk_to_data",
-                        model=self.model,
-                        input_text=question,
-                        output_text=sql,
-                        metadata={"sql": sql, "rows": len(df), "viz": viz},
-                    )
-
-                    if df.empty:
-                        logger.info("Query returned 0 rows")
-                        return {
-                            "type": "text",
-                            "content": f"{explanation}\n\n*No results found.*",
-                        }
-
-                    logger.info("Query returned %d rows, viz=%s", len(df), viz)
-
-                    if viz == "none" or (len(df) == 1 and len(df.columns) == 1):
-                        val = df.iloc[0, 0]
-                        return {
-                            "type": "text",
-                            "content": f"{explanation}\n\n**Result:** {val}",
-                            "sql": sql,
-                        }
-
-                    if viz != "table":
-                        chart = self._make_chart(df, viz, question)
-                        if chart:
-                            return {
-                                "type": "plot",
-                                "content": chart,
-                                "explanation": explanation,
-                                "sql": sql,
-                            }
-
+            # ── SQL execution span ────────────────────────────────────────────
+            with start_observation(
+                name="execute-sql",
+                as_type="span",
+                input={"sql": sql},
+            ) as sql_span:
+                try:
+                    df = self.db.execute_query(sql)
+                    sql_span.update(output={"rows": len(df), "columns": list(df.columns)})
+                except Exception:
+                    logger.error("SQL execution failed for query: %s", sql, exc_info=True)
+                    import sys
+                    exc_msg = str(sys.exc_info()[1])
+                    sql_span.update(metadata={"error": exc_msg})
                     return {
-                        "type": "table",
-                        "content": df,
+                        "type": "text",
+                        "content": f"SQL error: {exc_msg}\n\n```sql\n{sql}\n```",
+                    }
+
+            # Annotate the outer span with the final result
+            if lf:
+                lf.update_current_span(
+                    output={"rows": len(df), "viz": viz},
+                    metadata={"sql": sql, "explanation": explanation},
+                )
+
+            if df.empty:
+                logger.info("Query returned 0 rows")
+                return {
+                    "type": "text",
+                    "content": f"{explanation}\n\n*No results found.*",
+                }
+
+            logger.info("Query returned %d rows, viz=%s", len(df), viz)
+
+            if viz == "none" or (len(df) == 1 and len(df.columns) == 1):
+                val = df.iloc[0, 0]
+                return {
+                    "type": "text",
+                    "content": f"{explanation}\n\n**Result:** {val}",
+                    "sql": sql,
+                }
+
+            if viz != "table":
+                chart = self._make_chart(df, viz, question)
+                if chart:
+                    return {
+                        "type": "plot",
+                        "content": chart,
                         "explanation": explanation,
                         "sql": sql,
                     }
 
-            # No function call — return raw text
-            logger.warning("Gemini did not produce a function call for question: %r", question)
-            text_resp = getattr(resp, "text", "") or "I couldn't generate a query for that."
-            return {"type": "text", "content": text_resp}
+            return {
+                "type": "table",
+                "content": df,
+                "explanation": explanation,
+                "sql": sql,
+            }
 
         except Exception:
             logger.error("talk_to_data query() failed for question: %r", question, exc_info=True)

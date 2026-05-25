@@ -9,7 +9,7 @@ from typing import Dict, Generator, List
 
 import pandas as pd
 
-from .langfuse_client import LangfuseTracker
+from .langfuse_client import observe, get_langfuse
 from .schema_parser import Column, ForeignKey, Table, topological_sort
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,6 @@ class DataGenerator:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
-        self.tracker = LangfuseTracker()
         self._client = None  # lazy init
 
     @property
@@ -75,6 +74,7 @@ class DataGenerator:
             yield name, df
         logger.info("Generation complete for all %d table(s)", len(generated))
 
+    @observe(as_type="generation", name="modify-table", capture_input=False)
     def modify_table(
         self,
         df: pd.DataFrame,
@@ -105,6 +105,15 @@ class DataGenerator:
                     response_mime_type="application/json",
                 ),
             )
+            lf = get_langfuse()
+            if lf:
+                lf.update_current_generation(
+                    model=self.model,
+                    model_parameters={"temperature": 0.3, "max_output_tokens": self.max_tokens},
+                    input=prompt,
+                    output=resp.text or "",
+                    metadata={"table": table.name, "instruction": instruction[:200]},
+                )
             rows = json.loads(resp.text)
             if isinstance(rows, list) and rows:
                 logger.info("Table '%s' modified: %d rows returned", table.name, len(rows))
@@ -118,6 +127,7 @@ class DataGenerator:
     #  Internal helpers
     # ------------------------------------------------------------------ #
 
+    @observe(as_type="span", name="generate-table", capture_input=False)
     def _generate_table(
         self,
         table: Table,
@@ -151,6 +161,7 @@ class DataGenerator:
 
         return pd.DataFrame(all_rows)
 
+    @observe(as_type="generation", name="generate-batch", capture_input=False)
     def _generate_batch(
         self,
         table: Table,
@@ -214,13 +225,18 @@ class DataGenerator:
                     response_mime_type="application/json",
                 ),
             )
-            self.tracker.track_generation(
-                name=f"generate_{table.name}",
-                model=self.model,
-                input_text=prompt,
-                output_text=resp.text or "",
-                metadata={"table": table.name, "count": count},
-            )
+            lf = get_langfuse()
+            if lf:
+                lf.update_current_generation(
+                    model=self.model,
+                    model_parameters={
+                        "temperature": self.temperature,
+                        "max_output_tokens": self.max_tokens,
+                    },
+                    input=prompt,
+                    output=resp.text or "",
+                    metadata={"table": table.name, "count": count, "offset": id_offset},
+                )
             rows = json.loads(resp.text)
             if not isinstance(rows, list):
                 logger.warning(
