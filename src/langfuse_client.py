@@ -35,8 +35,7 @@ class LangfuseTracker:
         if self._client is None:
             return
         try:
-            trace = self._client.trace(name=name)
-            trace.generation(
+            self._client.generation(
                 name=name,
                 model=model,
                 input=input_text,
