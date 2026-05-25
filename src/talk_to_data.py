@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, Optional
 
@@ -10,6 +11,8 @@ import plotly.graph_objects as go
 from .database import DatabaseManager
 from .langfuse_client import LangfuseTracker
 from .schema_parser import Table
+
+logger = logging.getLogger(__name__)
 
 
 class TalkToDataManager:
@@ -78,6 +81,7 @@ class TalkToDataManager:
             "Choose the most informative visualization type."
         )
 
+        logger.info("Talk-to-data query: %r", question)
         try:
             resp = self.client.models.generate_content(
                 model=self.model,
@@ -95,12 +99,18 @@ class TalkToDataManager:
                     viz: str = fc.args.get("visualization", "table")
                     explanation: str = fc.args.get("explanation", "")
 
+                    logger.debug("Generated SQL (viz=%s): %s", viz, sql)
+
                     try:
                         df = self.db.execute_query(sql)
-                    except Exception as exc:
+                    except Exception:
+                        logger.error("SQL execution failed for query: %s", sql, exc_info=True)
+                        # re-read exc for the user-facing message
+                        import sys
+                        exc_msg = str(sys.exc_info()[1])
                         return {
                             "type": "text",
-                            "content": f"SQL error: {exc}\n\n```sql\n{sql}\n```",
+                            "content": f"SQL error: {exc_msg}\n\n```sql\n{sql}\n```",
                         }
 
                     self.tracker.track_generation(
@@ -112,10 +122,13 @@ class TalkToDataManager:
                     )
 
                     if df.empty:
+                        logger.info("Query returned 0 rows")
                         return {
                             "type": "text",
                             "content": f"{explanation}\n\n*No results found.*",
                         }
+
+                    logger.info("Query returned %d rows, viz=%s", len(df), viz)
 
                     if viz == "none" or (len(df) == 1 and len(df.columns) == 1):
                         val = df.iloc[0, 0]
@@ -143,11 +156,14 @@ class TalkToDataManager:
                     }
 
             # No function call — return raw text
+            logger.warning("Gemini did not produce a function call for question: %r", question)
             text_resp = getattr(resp, "text", "") or "I couldn't generate a query for that."
             return {"type": "text", "content": text_resp}
 
-        except Exception as exc:
-            return {"type": "text", "content": f"Error: {exc}"}
+        except Exception:
+            logger.error("talk_to_data query() failed for question: %r", question, exc_info=True)
+            import sys
+            return {"type": "text", "content": f"Error: {sys.exc_info()[1]}"}
 
     def stream_query(self, question: str):
         """Yield text chunks for streaming the analysis narrative."""
@@ -159,6 +175,7 @@ class TalkToDataManager:
             f"Question: {question}\n\n"
             "Write a concise analytical answer. If SQL is needed, show it in a code block."
         )
+        logger.info("Streaming query: %r", question)
         try:
             for chunk in self.client.models.generate_content_stream(
                 model=self.model,
@@ -167,8 +184,10 @@ class TalkToDataManager:
             ):
                 if chunk.text:
                     yield chunk.text
-        except Exception as exc:
-            yield f"\n\n*Error: {exc}*"
+        except Exception:
+            logger.error("stream_query failed for question: %r", question, exc_info=True)
+            import sys
+            yield f"\n\n*Error: {sys.exc_info()[1]}*"
 
     # ------------------------------------------------------------------ #
 
@@ -185,6 +204,6 @@ class TalkToDataManager:
                 return px.pie(df, names=cols[0], values=cols[1], title=title)
             if viz == "scatter" and len(cols) >= 2:
                 return px.scatter(df, x=cols[0], y=cols[1], title=title)
-        except Exception as exc:
-            print(f"[TalkToData] chart error: {exc}")
+        except Exception:
+            logger.error("Chart creation failed (viz=%s, columns=%s)", viz, list(df.columns), exc_info=True)
         return None

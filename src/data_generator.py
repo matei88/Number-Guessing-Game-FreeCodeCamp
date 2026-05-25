@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import random
 from typing import Dict, Generator, List
@@ -9,6 +11,8 @@ import pandas as pd
 
 from .langfuse_client import LangfuseTracker
 from .schema_parser import Column, ForeignKey, Table, topological_sort
+
+logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 50
 
@@ -21,8 +25,10 @@ def _gemini_client():
     api_key = os.environ.get("GOOGLE_API_KEY", "")
 
     if project:
+        logger.info("Gemini client: Vertex AI (project=%s, location=%s)", project, location)
         return genai.Client(vertexai=True, project=project, location=location)
     if api_key:
+        logger.info("Gemini client: AI Studio (API key)")
         return genai.Client(api_key=api_key)
     raise RuntimeError(
         "Set GOOGLE_CLOUD_PROJECT (Vertex AI) or GOOGLE_API_KEY (AI Studio)"
@@ -55,13 +61,19 @@ class DataGenerator:
     ) -> Generator[tuple[str, pd.DataFrame], None, None]:
         """Yield (table_name, DataFrame) pairs in dependency order."""
         order = topological_sort(tables)
+        logger.info(
+            "Starting generation: %d table(s), %d rows each, order=%s",
+            len(tables), num_rows, order,
+        )
         generated: Dict[str, pd.DataFrame] = {}
         for name in order:
             if name not in tables:
                 continue
             df = self._generate_table(tables[name], num_rows, generated, user_prompt)
             generated[name] = df
+            logger.info("Table '%s' generated: %d rows", name, len(df))
             yield name, df
+        logger.info("Generation complete for all %d table(s)", len(generated))
 
     def modify_table(
         self,
@@ -82,6 +94,7 @@ class DataGenerator:
             f"Return a JSON array with the complete modified dataset. "
             f"Keep all columns. Only change what the instruction specifies."
         )
+        logger.info("Modifying table '%s': instruction=%r", table.name, instruction[:120])
         try:
             resp = self.client.models.generate_content(
                 model=self.model,
@@ -94,9 +107,11 @@ class DataGenerator:
             )
             rows = json.loads(resp.text)
             if isinstance(rows, list) and rows:
+                logger.info("Table '%s' modified: %d rows returned", table.name, len(rows))
                 return pd.DataFrame(rows)
-        except Exception as exc:
-            print(f"[DataGenerator] modify error: {exc}")
+            logger.warning("modify_table: Gemini returned empty/non-list response for '%s'", table.name)
+        except Exception:
+            logger.error("modify_table failed for table '%s'", table.name, exc_info=True)
         return df
 
     # ------------------------------------------------------------------ #
@@ -110,19 +125,29 @@ class DataGenerator:
         existing: Dict[str, pd.DataFrame],
         user_prompt: str,
     ) -> pd.DataFrame:
-        fk_map = {fk.column: fk for fk in table.foreign_keys}
         fk_values: Dict[str, List] = {}
         for fk in table.foreign_keys:
             if fk.ref_table in existing:
                 ref_df = existing[fk.ref_table]
                 if fk.ref_column in ref_df.columns:
                     fk_values[fk.column] = ref_df[fk.ref_column].dropna().tolist()
+            else:
+                logger.debug(
+                    "Table '%s': FK ref '%s' not yet generated — column '%s' may be NULL",
+                    table.name, fk.ref_table, fk.column,
+                )
+
+        num_batches = math.ceil(num_rows / BATCH_SIZE)
+        logger.info(
+            "Generating table '%s': %d rows in %d batch(es)", table.name, num_rows, num_batches
+        )
 
         all_rows: List[dict] = []
         for start in range(0, num_rows, BATCH_SIZE):
             count = min(BATCH_SIZE, num_rows - start)
             batch = self._generate_batch(table, count, fk_values, user_prompt, id_offset=start)
             all_rows.extend(batch)
+            logger.debug("Table '%s': batch offset=%d, got %d rows", table.name, start, len(batch))
 
         return pd.DataFrame(all_rows)
 
@@ -198,9 +223,17 @@ class DataGenerator:
             )
             rows = json.loads(resp.text)
             if not isinstance(rows, list):
+                logger.warning(
+                    "Gemini returned non-list JSON for '%s'; trying 'data'/'rows' keys",
+                    table.name,
+                )
                 rows = rows.get("data", rows.get("rows", []))
-        except Exception as exc:
-            print(f"[DataGenerator] Gemini error for {table.name}: {exc}")
+        except Exception:
+            logger.error(
+                "Gemini generation failed for table '%s' (offset=%d, count=%d) — using fallback",
+                table.name, id_offset, count,
+                exc_info=True,
+            )
             rows = self._fallback_batch(table, count, fk_values)
 
         pk = table.primary_key_column

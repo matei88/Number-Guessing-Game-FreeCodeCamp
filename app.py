@@ -7,6 +7,7 @@ Phase 2/3: Natural-language querying of the generated data.
 from __future__ import annotations
 
 import io
+import logging
 import os
 import zipfile
 from pathlib import Path
@@ -16,6 +17,12 @@ import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
+
+from src.logging_config import setup_logging
+
+setup_logging()
+
+logger = logging.getLogger(__name__)
 
 from src.database import DatabaseManager
 from src.schema_parser import parse_ddl, topological_sort
@@ -63,8 +70,10 @@ def get_db() -> DatabaseManager | None:
         return None
     try:
         st.session_state.db = DatabaseManager.from_env()
-    except Exception as exc:
-        st.session_state.db_error = str(exc)
+    except Exception:
+        logger.error("Database connection failed", exc_info=True)
+        import sys
+        st.session_state.db_error = str(sys.exc_info()[1])
     return st.session_state.db
 
 
@@ -91,9 +100,13 @@ with st.sidebar:
     schemas_dir = Path(__file__).parent / "schemas"
     for ddl_file in sorted(schemas_dir.glob("*.ddl")):
         if st.button(ddl_file.stem, use_container_width=True):
-            st.session_state.ddl_content = ddl_file.read_text()
-            st.session_state.schema_tables = parse_ddl(st.session_state.ddl_content)
-            st.session_state.generated_data = {}
+            try:
+                st.session_state.ddl_content = ddl_file.read_text()
+                st.session_state.schema_tables = parse_ddl(st.session_state.ddl_content)
+                st.session_state.generated_data = {}
+                logger.info("Sample schema loaded: %s (%d tables)", ddl_file.stem, len(st.session_state.schema_tables))
+            except Exception:
+                logger.error("Failed to load sample schema: %s", ddl_file.stem, exc_info=True)
             st.rerun()
 
 # =============================================================================
@@ -125,11 +138,16 @@ if "Data Generation" in page:
         )
 
     if uploaded:
-        content = uploaded.read().decode("utf-8")
-        if content != st.session_state.ddl_content:
-            st.session_state.ddl_content = content
-            st.session_state.schema_tables = parse_ddl(content)
-            st.session_state.generated_data = {}
+        try:
+            content = uploaded.read().decode("utf-8")
+            if content != st.session_state.ddl_content:
+                st.session_state.ddl_content = content
+                st.session_state.schema_tables = parse_ddl(content)
+                st.session_state.generated_data = {}
+                logger.info("DDL uploaded: %s — %d table(s) parsed", uploaded.name, len(st.session_state.schema_tables))
+        except Exception:
+            logger.error("Failed to parse uploaded DDL: %s", uploaded.name, exc_info=True)
+            st.error("Could not parse the uploaded file. Check that it is valid SQL/DDL.")
 
     if st.session_state.schema_tables:
         names = list(st.session_state.schema_tables.keys())
@@ -164,6 +182,10 @@ if "Data Generation" in page:
         else:
             from src.data_generator import DataGenerator
 
+            logger.info(
+                "Generation requested: %d tables, %d rows, temperature=%.2f",
+                len(st.session_state.schema_tables), num_rows, temperature,
+            )
             generator = DataGenerator(temperature=temperature, max_tokens=max_tokens)
             tables = st.session_state.schema_tables
             progress = st.progress(0, text="Starting…")
@@ -183,10 +205,13 @@ if "Data Generation" in page:
 
                 st.session_state.generated_data = generated
                 progress.empty()
+                logger.info("Generation complete: %d tables", len(generated))
                 st.success(f"Done! Generated data for {len(generated)} tables.")
-            except Exception as exc:
+            except Exception:
+                logger.error("Data generation failed", exc_info=True)
                 progress.empty()
-                st.error(f"Generation failed: {exc}")
+                import sys
+                st.error(f"Generation failed: {sys.exc_info()[1]}")
 
     # ── data preview ──────────────────────────────────────────────────────────
     if st.session_state.generated_data:
@@ -242,17 +267,24 @@ if "Data Generation" in page:
                     if edit_instr.strip():
                         from src.data_generator import DataGenerator
 
-                        with st.spinner("Applying changes…"):
-                            gen = DataGenerator(temperature=0.3, max_tokens=max_tokens)
-                            updated = gen.modify_table(
-                                df,
-                                st.session_state.schema_tables[selected],
-                                edit_instr,
-                            )
-                        st.session_state.generated_data[selected] = updated
-                        db = get_db()
-                        if db:
-                            db.store_dataframe(updated, selected)
+                        logger.info("Quick edit on '%s': %r", selected, edit_instr[:120])
+                        try:
+                            with st.spinner("Applying changes…"):
+                                gen = DataGenerator(temperature=0.3, max_tokens=max_tokens)
+                                updated = gen.modify_table(
+                                    df,
+                                    st.session_state.schema_tables[selected],
+                                    edit_instr,
+                                )
+                            st.session_state.generated_data[selected] = updated
+                            db = get_db()
+                            if db:
+                                db.store_dataframe(updated, selected)
+                            logger.info("Quick edit applied to '%s': %d rows", selected, len(updated))
+                        except Exception:
+                            logger.error("Quick edit failed for table '%s'", selected, exc_info=True)
+                            import sys
+                            st.error(f"Edit failed: {sys.exc_info()[1]}")
                         st.rerun()
                     else:
                         st.warning("Please enter an instruction.")
@@ -306,10 +338,12 @@ elif "Talk" in page:
 
         with st.chat_message("assistant"):
             if db is None:
+                logger.error("Talk-to-data query attempted but DB is not connected")
                 st.error("Database not connected — cannot run queries.")
             else:
                 from src.talk_to_data import TalkToDataManager
 
+                logger.info("User question: %r", question)
                 mgr = TalkToDataManager(db)
 
                 with st.spinner("Thinking…"):

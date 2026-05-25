@@ -1,6 +1,9 @@
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -48,6 +51,12 @@ def parse_ddl(ddl_text: str) -> Dict[str, Table]:
         table_name = match.group(1)
         body = match.group(2)
         tables[table_name] = _parse_table_body(table_name, body)
+        logger.debug(
+            "Parsed table %s: %d columns, %d FKs",
+            table_name,
+            len(tables[table_name].columns),
+            len(tables[table_name].foreign_keys),
+        )
 
     # ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY
     alter_pattern = re.compile(
@@ -64,7 +73,9 @@ def parse_ddl(ddl_text: str) -> Dict[str, Table]:
             existing_cols = {fk.column for fk in tables[tname].foreign_keys}
             if col not in existing_cols:
                 tables[tname].foreign_keys.append(ForeignKey(col, ref_table, ref_col))
+                logger.debug("ALTER TABLE FK added: %s.%s -> %s.%s", tname, col, ref_table, ref_col)
 
+    logger.info("DDL parsed: %d table(s) found", len(tables))
     return tables
 
 
@@ -123,6 +134,8 @@ def _parse_table_body(table_name: str, body: str) -> Table:
                 if col.primary_key and not table.primary_key_column:
                     table.primary_key_column = col.name
                 table.columns.append(col)
+            else:
+                logger.warning("Could not parse column definition in table %s: %r", table_name, part[:120])
 
     return table
 

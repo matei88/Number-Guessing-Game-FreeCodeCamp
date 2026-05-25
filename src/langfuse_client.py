@@ -1,5 +1,8 @@
+import logging
 import os
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class LangfuseTracker:
@@ -13,8 +16,13 @@ class LangfuseTracker:
             host = os.environ.get("LANGFUSE_HOST", "http://localhost:3000")
             if pk and sk:
                 self._client = Langfuse(public_key=pk, secret_key=sk, host=host)
+                logger.info("Langfuse tracking enabled (host=%s)", host)
+            else:
+                logger.debug("Langfuse keys not set — tracking disabled")
+        except ImportError:
+            logger.debug("langfuse package not installed — tracking disabled")
         except Exception:
-            pass
+            logger.warning("Langfuse initialisation failed — tracking disabled", exc_info=True)
 
     def track_generation(
         self,
@@ -35,5 +43,6 @@ class LangfuseTracker:
                 output=output_text,
                 metadata=metadata or {},
             )
-        except Exception as exc:
-            print(f"[Langfuse] tracking error: {exc}")
+            logger.debug("Langfuse generation tracked: %s", name)
+        except Exception:
+            logger.warning("Langfuse tracking failed for '%s'", name, exc_info=True)
