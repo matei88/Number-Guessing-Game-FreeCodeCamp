@@ -92,7 +92,7 @@ GOOGLE_API_KEY=your-api-key-from-aistudio.google.com
 Langfuse keys are optional — the app runs fine without them (tracking is silently skipped):
 
 ```dotenv
-LANGFUSE_HOST=http://localhost:3000
+LANGFUSE_BASE_URL=http://localhost:3000
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
 ```
@@ -274,7 +274,7 @@ curl http://localhost:8501/_stcore/health   # should return "ok"
 | `GOOGLE_API_KEY` | One of A/B | — | Google AI Studio API key |
 | `GEMINI_MODEL` | No | `gemini-2.0-flash` | Gemini model ID |
 | `DATABASE_URL` | Yes | `postgresql://postgres:postgres@localhost:5432/data_assistant` | PostgreSQL connection string |
-| `LANGFUSE_HOST` | No | `http://localhost:3000` | Langfuse server URL |
+| `LANGFUSE_BASE_URL` | No | `http://localhost:3000` | Langfuse server URL |
 | `LANGFUSE_PUBLIC_KEY` | No | — | Langfuse public key (tracing disabled if unset) |
 | `LANGFUSE_SECRET_KEY` | No | — | Langfuse secret key |
 

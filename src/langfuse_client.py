@@ -16,7 +16,7 @@ try:
 
     _pk = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
     _sk = os.environ.get("LANGFUSE_SECRET_KEY", "")
-    _host = os.environ.get("LANGFUSE_HOST", "http://localhost:3000")
+    _host = os.environ.get("LANGFUSE_BASE_URL", "http://localhost:3000")
 
     if _pk and _sk:
         _langfuse = Langfuse(public_key=_pk, secret_key=_sk, host=_host)
