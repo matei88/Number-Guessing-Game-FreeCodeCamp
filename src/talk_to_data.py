@@ -91,6 +91,10 @@ class TalkToDataManager:
         logger.info("Talk-to-data query: %r", question)
         try:
             # ── Gemini function-call generation ──────────────────────────────
+            sql: str = ""
+            viz: str = "table"
+            explanation: str = ""
+
             with start_observation(
                 name="nl-to-sql",
                 as_type="generation",
@@ -107,20 +111,16 @@ class TalkToDataManager:
                     ),
                 )
 
-            sql: str = ""
-            viz: str = "table"
-            explanation: str = ""
+                for part in resp.candidates[0].content.parts:
+                    if hasattr(part, "function_call") and part.function_call:
+                        fc = part.function_call
+                        sql = fc.args.get("sql", "")
+                        viz = fc.args.get("visualization", "table")
+                        explanation = fc.args.get("explanation", "")
+                        break
 
-            for part in resp.candidates[0].content.parts:
-                if hasattr(part, "function_call") and part.function_call:
-                    fc = part.function_call
-                    sql = fc.args.get("sql", "")
-                    viz = fc.args.get("visualization", "table")
-                    explanation = fc.args.get("explanation", "")
-                    break
+                nl_gen.update(output={"sql": sql, "visualization": viz, "explanation": explanation})
 
-            # Update the generation span with what Gemini produced
-            nl_gen.update(output={"sql": sql, "visualization": viz, "explanation": explanation})
             logger.debug("Generated SQL (viz=%s): %s", viz, sql)
 
             if not sql:
