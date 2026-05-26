@@ -326,7 +326,8 @@ elif "Talk" in page:
             elif mtype == "plot":
                 if msg.get("explanation"):
                     st.markdown(msg["explanation"])
-                st.plotly_chart(msg["content"], use_container_width=True)
+                import plotly.io as pio
+                st.plotly_chart(pio.from_json(msg["content"]), use_container_width=True)
                 if msg.get("sql"):
                     with st.expander("SQL"):
                         st.code(msg["sql"], language="sql")
@@ -350,7 +351,12 @@ elif "Talk" in page:
                 mgr = TalkToDataManager(db)
 
                 with st.spinner("Thinking…"):
-                    result = mgr.query(question, st.session_state.schema_tables)
+                    try:
+                        result = mgr.query(question, st.session_state.schema_tables)
+                    except Exception:
+                        logger.error("Unhandled error in mgr.query()", exc_info=True)
+                        import sys
+                        result = {"type": "text", "content": f"Unexpected error: {sys.exc_info()[1]}"}
 
                 rtype = result.get("type", "text")
                 if rtype == "text":
@@ -379,6 +385,7 @@ elif "Talk" in page:
                     )
 
                 elif rtype == "plot":
+                    import plotly.io as pio
                     exp = result.get("explanation", "")
                     if exp:
                         st.markdown(exp)
@@ -390,7 +397,7 @@ elif "Talk" in page:
                     st.session_state.messages.append(
                         {
                             "role": "assistant",
-                            "content": result["content"],
+                            "content": pio.to_json(result["content"]),
                             "type": "plot",
                             "explanation": exp,
                             "sql": sql,
