@@ -193,32 +193,6 @@ class TalkToDataManager:
             import sys
             return {"type": "text", "content": f"Error: {sys.exc_info()[1]}"}
 
-    def stream_query(self, question: str):
-        """Yield text chunks for streaming the analysis narrative."""
-        from google.genai import types  # type: ignore
-
-        schema_desc = self.db.get_schema_description()
-        prompt = (
-            f"Database schema:\n{schema_desc}\n\n"
-            f"Question: {question}\n\n"
-            "Write a concise analytical answer. If SQL is needed, show it in a code block."
-        )
-        logger.info("Streaming query: %r", question)
-        try:
-            for chunk in self.client.models.generate_content_stream(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.2),
-            ):
-                if chunk.text:
-                    yield chunk.text
-        except Exception:
-            logger.error("stream_query failed for question: %r", question, exc_info=True)
-            import sys
-            yield f"\n\n*Error: {sys.exc_info()[1]}*"
-
-    # ------------------------------------------------------------------ #
-
     def _make_chart(
         self, df: pd.DataFrame, viz: str, title: str
     ) -> Optional[go.Figure]:
