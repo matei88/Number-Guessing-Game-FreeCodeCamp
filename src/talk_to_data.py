@@ -37,7 +37,7 @@ class TalkToDataManager:
                 raise RuntimeError("No Google credentials configured.")
         return self._client
 
-    @observe(as_type="span", name="talk-to-data-query", capture_input=False)
+    @observe(as_type="span", name="talk-to-data-query", capture_input=False, capture_output=False)
     def query(self, question: str, schema_tables: Dict[str, Table]) -> Dict[str, Any]:
         from google.genai import types  # type: ignore
 
